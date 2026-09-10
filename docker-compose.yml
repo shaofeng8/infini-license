@@ -1,0 +1,138 @@
+# infini-license 部署编排。
+#
+# 配置从同目录的 .env 读（compose 会自动加载它做 ${} 插值），照着
+# .env.example 复制一份填好即可。密钥类变量用 ${VAR:?...} 声明为必填 ——
+# 缺了就在 `docker compose up` 阶段直接报错退出，而不是让容器起来之后
+# 在第一次签发时才炸，那时错误会表现成一句看不懂的解密失败。
+#
+# 端口默认只绑在 127.0.0.1 上。对外服务由宿主机的 nginx 反代 443 完成
+# （见 deploy/nginx/license.infinisynapse.cn.conf）—— 数据库和后端
+# 不该能从公网直接摸到。需要临时对外时改 BIND_ADDR。
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: infini-license-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 里设置 MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-infini_license}
+      TZ: UTC
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      # 全链路 UTC：驱动那侧钉了 timezone:'Z'，库这侧也必须是 UTC，
+      # 否则同一个到期时间存进去和读出来差 8 小时，
+      # 而授权到期差 8 小时意味着客户可能提前一晚上被锁在门外
+      - --default-time-zone=+00:00
+    ports:
+      - '${BIND_ADDR:-127.0.0.1}:${MYSQL_PORT:-3307}:3306'
+    volumes:
+      - license-mysql-data:/var/lib/mysql
+      # 只在数据卷为空时执行一次。已有数据的库改了 SQL 也不会重跑，
+      # 存量库要用 `pnpm --filter @infini-license/server db:init` 补
+      - ./mysql_init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD', 'mysqladmin', 'ping', '-h', '127.0.0.1']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: infini-license-redis
+    restart: unless-stopped
+    # 不持久化：这里只放限流计数和短期缓存，丢了自动重建。
+    # 开 RDB/AOF 只会带来磁盘占用和 fork 抖动
+    command: redis-server --save '' --appendonly no
+    ports:
+      - '${BIND_ADDR:-127.0.0.1}:${REDIS_PORT:-6380}:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    image: infini-license-server
+    container_name: infini-license-server
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      APP_PORT: 3010
+      APP_GLOBAL_PREFIX: api
+      APP_NAME: infini-license
+
+      # 前面隔着几层反代。当前拓扑是「宿主 nginx → server 容器」，就一层。
+      # 这个数决定 req.ip 怎么算，而审计日志的 IP 列和限流分桶都取自它：
+      # 设 0 会让所有人被记成同一个代理 IP，设大了则允许客户端伪造 IP。
+      # 以后前面再加 CDN/SLB，就按实际层数往上加
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-1}
+
+      # 容器间走服务名，不是宿主机端口
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: ${MYSQL_USER:-root}
+      MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 里设置 MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-infini_license}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_DB: ${REDIS_DB:-0}
+
+      # 换掉它等于丢弃库里所有签名私钥，已签发的凭证仍然有效
+      # （客户端只验公钥），但再也无法为老 kid 续签。
+      # 必须单独备份，且不要跟数据库备份放在同一个地方
+      LICENSE_MASTER_KEY: ${LICENSE_MASTER_KEY:?请在 .env 里设置 LICENSE_MASTER_KEY（32 字节 base64）}
+      JWT_SECRET: ${JWT_SECRET:?请在 .env 里设置 JWT_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-8h}
+
+      # 只在库里一个 owner 都没有时才建号。生产上首次启动后应立刻改密，
+      # 并把 .env 里这两行清空
+      BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+
+      TRIAL_DAYS: ${TRIAL_DAYS:-30}
+      TRIAL_MAX_USERS: ${TRIAL_MAX_USERS:-10}
+      TRIAL_TOKEN_QUOTA: ${TRIAL_TOKEN_QUOTA:-50000000}
+      TRIAL_TASK_QUOTA: ${TRIAL_TASK_QUOTA:-2000}
+      TRIAL_MAX_CONCURRENT_TASKS: ${TRIAL_MAX_CONCURRENT_TASKS:-2}
+      TRIAL_WARN_DAYS: ${TRIAL_WARN_DAYS:-7}
+
+      LICENSE_MAX_TERM_DAYS: ${LICENSE_MAX_TERM_DAYS:-0}
+      LICENSE_LONG_TERM_WARN_DAYS: ${LICENSE_LONG_TERM_WARN_DAYS:-760}
+
+      # 这三项会被写进签发出去的凭证，客户被阻断时看到的就是它们。
+      # 填错了，等于客户在最需要联系我们的时候拿到一个打不通的号码
+      SUPPORT_NAME: ${SUPPORT_NAME:-InfiniSynapse 客户成功}
+      SUPPORT_PHONE: ${SUPPORT_PHONE:-}
+      SUPPORT_EMAIL: ${SUPPORT_EMAIL:-}
+    ports:
+      - '${BIND_ADDR:-127.0.0.1}:${SERVER_PORT:-3010}:3010'
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    image: infini-license-web
+    container_name: infini-license-web
+    restart: unless-stopped
+    depends_on:
+      # 等 server 真的健康再起。只写 depends_on 不带 condition 的话，
+      # web 会在 server 还在连数据库时就开始接流量，
+      # 运营那几秒里刷新页面看到的是 502
+      server:
+        condition: service_healthy
+    ports:
+      - '${BIND_ADDR:-127.0.0.1}:${WEB_PORT:-5273}:80'
+
+volumes:
+  license-mysql-data:

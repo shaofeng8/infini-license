@@ -1,0 +1,76 @@
+# ============================ 构建阶段 ============================
+# ACR 上海构建机访问不了 Docker Hub（registry-1.docker.io 超时），
+# 基础镜像走 DaoCloud 代理，与 infini-proxy 同一套
+FROM docker.m.daocloud.io/library/node:22-alpine AS builder
+
+# 锁到根 package.json 里 packageManager 声明的同一个版本。
+# 用 latest 的话，本地锁文件的 lockfileVersion 可能跟镜像里的 pnpm 对不上，
+# --frozen-lockfile 会直接失败，而报错信息完全不提版本问题
+RUN npm config set registry https://registry.npmmirror.com \
+    && npm install -g pnpm@8.15.4
+
+WORKDIR /app
+
+# 先只拷各包的 package.json 再装依赖，源码留到后面拷。
+# 这样改一行业务代码不会让依赖层缓存失效，重建从几分钟变成几秒
+#
+# .npmrc 必须一起拷。它里面是 shamefully-hoist=true，pnpm 默认的严格
+# node_modules 布局下 jsonwebtoken 这类**未声明的传递依赖**根本解析不到
+# （auth.module.ts 就从它那里取 SignOptions）。少拷这一个文件，本地编译
+# 通过、镜像里编译失败，而报错信息只说"找不到模块"，看不出是布局差异
+COPY .npmrc pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY packages/server/package.json ./packages/server/
+COPY packages/sdk/package.json ./packages/sdk/
+COPY packages/web/package.json ./packages/web/
+
+# --frozen-lockfile：锁文件与 package.json 对不上时直接失败，
+# 而不是悄悄装一个跟本地不同的版本组合
+RUN pnpm install --frozen-lockfile --filter @infini-license/server
+
+COPY packages/server ./packages/server
+
+RUN pnpm run -C packages/server build
+
+
+# ============================ 运行阶段 ============================
+FROM docker.m.daocloud.io/library/node:22-alpine AS runner
+
+RUN npm config set registry https://registry.npmmirror.com \
+    && npm install -g pnpm@8.15.4
+
+WORKDIR /app
+
+# 只装生产依赖，devDependencies（@nestjs/cli、typescript、jest）不进运行镜像。
+# 仍然带上 workspace 与锁文件：单独拿一个 package.json 去装会重新解析依赖树，
+# 得到的版本可能跟构建时验过的那套不是同一套。
+# .npmrc 同样要拷 —— 运行期也依赖 hoist 后的布局（见构建阶段的说明）
+COPY .npmrc pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY packages/server/package.json ./packages/server/
+COPY packages/sdk/package.json ./packages/sdk/
+COPY packages/web/package.json ./packages/web/
+
+RUN pnpm install --frozen-lockfile --prod --filter @infini-license/server \
+    && pnpm store prune
+
+COPY --from=builder /app/packages/server/dist ./packages/server/dist
+
+# 库是 UTC（compose 里 MySQL 带 --default-time-zone=+00:00），
+# 驱动也钉了 timezone: 'Z'。容器再设成 Asia/Shanghai 的话，存取不会错，
+# 但日志时间与库里的时间差 8 小时，排查到期问题时特别容易看岔
+ENV TZ=UTC
+ENV NODE_ENV=production
+
+WORKDIR /app/packages/server
+
+EXPOSE 3010
+
+# 健康检查看的是响应体里的 db 字段，不是 HTTP 状态码。
+#
+# /api/health 在数据库连不上时依然返回 200，只是把 body 改成
+# {status:'degraded', db:'down'} —— 探针只看 response.ok 的话，
+# 库挂了而 Node 进程还活着的容器会一直显示 healthy，
+# 而这恰恰是最需要被摘掉的状态
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+    CMD node -e "fetch('http://127.0.0.1:3010/api/health').then(r=>r.text()).then(t=>process.exit(t.includes('\"db\":\"up\"')?0:1)).catch(()=>process.exit(1))"
+
+CMD ["node", "dist/main"]

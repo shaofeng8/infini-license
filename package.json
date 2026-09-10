@@ -1,0 +1,25 @@
+{
+  "name": "infini-license",
+  "version": "0.1.0",
+  "description": "InfiniSynapse License Service - 授权签发、管理与试用追踪",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently --kill-others --names \"server,web\" --prefix-colors \"blue,green\" \"pnpm run dev:server\" \"pnpm run dev:web\"",
+    "dev:server": "pnpm run -C packages/server dev",
+    "dev:web": "pnpm run -C packages/web dev",
+    "build": "pnpm run -C packages/sdk build && pnpm run -C packages/server build && pnpm run -C packages/web build",
+    "test": "pnpm run -C packages/sdk test && pnpm run -C packages/server test",
+    "lint": "pnpm run -C packages/server lint",
+    "clear": "rimraf node_modules packages/*/node_modules"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "concurrently": "^9.1.2",
+    "rimraf": "^6.0.1"
+  },
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=8.0.0"
+  },
+  "packageManager": "pnpm@8.15.4"
+}

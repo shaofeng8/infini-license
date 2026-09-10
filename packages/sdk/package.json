@@ -1,0 +1,33 @@
+{
+  "name": "@infini-synapse/license-client",
+  "version": "0.1.0",
+  "description": "InfiniSynapse 授权客户端 SDK：凭证验签、状态求值、限额判定",
+  "private": true,
+  "license": "UNLICENSED",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "jest",
+    "test:cov": "jest --coverage",
+    "lint": "eslint \"src/**/*.ts\" --fix",
+    "clear": "rimraf node_modules dist"
+  },
+  "//": "运行时依赖必须保持为空。SDK 以源码形式内嵌进 infini-proxy 与 infiniSynapse，任何第三方依赖都会变成三处工程的负担，也让混淆和体积审查变复杂。只用 Node 内置的 crypto/fs/os。",
+  "dependencies": {},
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^22.10.0",
+    "eslint": "^9.18.0",
+    "globals": "^16.0.0",
+    "jest": "^30.0.0",
+    "ts-jest": "^29.2.5",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.20.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

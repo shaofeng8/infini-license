@@ -1,0 +1,23 @@
+node_modules/
+dist/
+dist_*/
+build/
+coverage/
+*.log
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# 环境变量：绝不入库，包含主密钥
+.env
+.env.*
+!.env.example
+docs/
+
+# 签发产物：凭证文件与密钥不得进入仓库
+*.key
+!**/src/**/*.key.ts
+*.pem
+/tmp/
+/local/
