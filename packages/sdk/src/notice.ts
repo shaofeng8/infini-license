@@ -26,19 +26,14 @@ export interface LicenseNotice {
 
 const I18N_PREFIX = 'license.notice'
 
-/** 到期前 3 天内的提醒不允许关闭 */
-const UNDISMISSIBLE_DAYS = 3
-
-/** 到期前 7 天内每天提醒一次 */
+/** 到期前这么多天开始每天弹一次，可关闭 */
 const DAILY_REMINDER_DAYS = 7
 
 /**
  * 由授权状态生成 UI 提醒。纯函数。
  *
- * 分档而不是一律弹同一个框，是因为提醒疲劳是真实存在的：连续 15 天每次登录
- * 都弹同一个不可关闭的框，用户会训练出「无脑点掉」的肌肉记忆，等到真正
- * 只剩三天时那个框就已经失效了。所以远期提醒可以关且关得久，临期提醒
- * 才升级为不可关闭。
+ * 只保留三档：预警窗口外完全静默、剩余 ≤7 天每天弹一次（可关）、到期阻断登录。
+ * 分档全在这里，两个前端只负责渲染。
  */
 export function buildNotice(state: LicenseState): LicenseNotice {
   const support = state.support ?? null
@@ -63,30 +58,10 @@ export function buildNotice(state: LicenseState): LicenseNotice {
     }
   }
 
-  // 试用期即便没到预警窗口也常驻一条 banner。试用状态必须始终可见 ——
-  // 客户以为自己在用正式版、到期突然被锁，是最糟的体验。
   const isTrial = state.licenseType === 'trial' || state.status.startsWith('trial')
   const remaining = state.remainingDays
 
-  if (remaining === null) {
-    return silent(isTrial, params, support, state)
-  }
-
-  if (remaining <= UNDISMISSIBLE_DAYS) {
-    return {
-      level: 'urgent',
-      blocking: false,
-      titleKey: `${I18N_PREFIX}.urgent.title`,
-      messageKey: `${I18N_PREFIX}.urgent.${isTrial ? 'trial' : 'formal'}`,
-      params,
-      dismissible: false,
-      snoozeMs: 0,
-      banner: true,
-      support,
-    }
-  }
-
-  if (remaining <= DAILY_REMINDER_DAYS) {
+  if (remaining !== null && remaining <= DAILY_REMINDER_DAYS) {
     return {
       level: 'warning',
       blocking: false,
@@ -95,26 +70,12 @@ export function buildNotice(state: LicenseState): LicenseNotice {
       params,
       dismissible: true,
       snoozeMs: DAY_MS,
-      banner: true,
+      banner: false,
       support,
     }
   }
 
-  if (state.warning) {
-    return {
-      level: 'info',
-      blocking: false,
-      titleKey: `${I18N_PREFIX}.info.title`,
-      messageKey: `${I18N_PREFIX}.info.${isTrial ? 'trial' : 'formal'}`,
-      params,
-      dismissible: true,
-      snoozeMs: 3 * DAY_MS,
-      banner: true,
-      support,
-    }
-  }
-
-  return silent(isTrial, params, support, state)
+  return silent(params, support)
 }
 
 /** 阻断页要展示的文案变体 */
@@ -134,20 +95,18 @@ function blockedVariant(state: LicenseState): string {
 }
 
 function silent(
-  isTrial: boolean,
   params: Record<string, string | number>,
   support: LicenseState['support'],
-  state: LicenseState,
 ): LicenseNotice {
   return {
-    level: isTrial ? 'info' : 'none',
+    level: 'none',
     blocking: false,
-    titleKey: isTrial ? `${I18N_PREFIX}.trialBanner.title` : '',
-    messageKey: isTrial ? `${I18N_PREFIX}.trialBanner.message` : '',
+    titleKey: '',
+    messageKey: '',
     params,
     dismissible: true,
-    snoozeMs: 3 * DAY_MS,
-    banner: isTrial,
-    support: support ?? state.support ?? null,
+    snoozeMs: 0,
+    banner: false,
+    support,
   }
 }

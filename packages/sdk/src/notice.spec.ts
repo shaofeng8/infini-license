@@ -66,17 +66,7 @@ describe('buildNotice · 阻断态', () => {
 })
 
 describe('buildNotice · 分档提醒', () => {
-  it('远期预警可关闭且关得久，避免提醒疲劳', () => {
-    const notice = buildNotice(
-      state({ status: 'formal_expiring', remainingDays: 14, warning: true }),
-    )
-
-    expect(notice.level).toBe('info')
-    expect(notice.dismissible).toBe(true)
-    expect(notice.snoozeMs).toBe(3 * DAY_MS)
-  })
-
-  it('7 天内每天提醒一次', () => {
+  it('7 天内每天提醒一次，可关闭，不挂横幅', () => {
     const notice = buildNotice(
       state({ status: 'formal_expiring', remainingDays: 6, warning: true }),
     )
@@ -84,48 +74,54 @@ describe('buildNotice · 分档提醒', () => {
     expect(notice.level).toBe('warning')
     expect(notice.dismissible).toBe(true)
     expect(notice.snoozeMs).toBe(DAY_MS)
+    expect(notice.banner).toBe(false)
   })
 
-  it('3 天内升级为不可关闭 —— 这时候必须让人看见', () => {
+  it('剩 1–3 天也仍是每天一次、可关闭，不再升级为不可关闭', () => {
     const notice = buildNotice(
-      state({ status: 'formal_expiring', remainingDays: 3, warning: true }),
+      state({ status: 'formal_expiring', remainingDays: 2, warning: true }),
     )
 
-    expect(notice.level).toBe('urgent')
-    expect(notice.dismissible).toBe(false)
-    expect(notice.snoozeMs).toBe(0)
+    expect(notice.level).toBe('warning')
+    expect(notice.dismissible).toBe(true)
+    expect(notice.snoozeMs).toBe(DAY_MS)
   })
 
-  it('分档边界连续，没有落空的天数', () => {
+  it('还没进 7 天窗口完全静默，正式与试用一样不挂横幅', () => {
+    const formal = buildNotice(
+      state({ status: 'formal_expiring', remainingDays: 14, warning: true }),
+    )
+    const trial = buildNotice(
+      state({ status: 'trial_active', licenseType: 'trial', remainingDays: 25, warning: false }),
+    )
+
+    expect(formal.level).toBe('none')
+    expect(formal.banner).toBe(false)
+    expect(trial.level).toBe('none')
+    expect(trial.banner).toBe(false)
+    expect(trial.messageKey).toBe('')
+  })
+
+  it('分档边界：7 天起提醒，8 天起静默', () => {
     const levels = [1, 2, 3, 4, 7, 8, 14, 15, 16].map(
       d => buildNotice(state({ status: 'formal_expiring', remainingDays: d, warning: d <= 15 })).level,
     )
 
     expect(levels).toEqual([
-      'urgent',
-      'urgent',
-      'urgent',
       'warning',
       'warning',
-      'info',
-      'info',
-      'info',
+      'warning',
+      'warning',
+      'warning',
+      'none',
+      'none',
+      'none',
       'none',
     ])
   })
 })
 
-describe('buildNotice · 试用常驻提示', () => {
-  it('试用期即便远未到期也常驻 banner —— 客户必须始终知道自己在试用', () => {
-    const notice = buildNotice(
-      state({ status: 'trial_active', licenseType: 'trial', remainingDays: 25, warning: false }),
-    )
-
-    expect(notice.banner).toBe(true)
-    expect(notice.level).toBe('info')
-    expect(notice.messageKey).toContain('trialBanner')
-  })
-
+describe('buildNotice · 有效期内静默', () => {
   it('正式授权在有效期内完全静默，不打扰用户', () => {
     const notice = buildNotice(state())
 
@@ -138,13 +134,15 @@ describe('buildNotice · 试用常驻提示', () => {
 
     expect(notice.level).toBe('none')
     expect(notice.blocking).toBe(false)
+    expect(notice.banner).toBe(false)
   })
 
-  it('试用的永久情形仍显示 banner', () => {
+  it('试用未进预警窗口也不挂 banner、不弹窗', () => {
     const notice = buildNotice(
       state({ status: 'trial_active', licenseType: 'trial', remainingDays: null }),
     )
 
-    expect(notice.banner).toBe(true)
+    expect(notice.level).toBe('none')
+    expect(notice.banner).toBe(false)
   })
 })
